@@ -1,10 +1,9 @@
 //! Rate limiting types and interface.
 //!
 //! Defines the [`RateLimiter`] trait. The Redis-backed implementation lives in
-//! `buzz-relay` / `buzz-pubsub`. Fixed-window counter algorithm.
-//!
-//! ⚠️ Fixed windows allow up to 2× burst at boundaries. Upgrade to sliding
-//! window or token bucket for strict limiting.
+//! `buzz-pubsub` (`RedisRateLimiter`) and uses a token-bucket algorithm:
+//! capacity = `limit`, refill = `limit / window_secs` tokens per second, so
+//! there is no fixed-window boundary burst.
 
 use std::net::IpAddr;
 
@@ -105,6 +104,14 @@ pub struct RateLimitConfig {
     /// Maximum messages per minute for platform-tier agent tokens. Default: 600.
     #[serde(default = "default_agent_plat_msg")]
     pub agent_platform_messages_per_min: u64,
+    /// Hex pubkeys of agents granted the **elevated** message tier. Empty by
+    /// default (no agent is elevated until an operator lists one).
+    #[serde(default)]
+    pub elevated_pubkeys: Vec<String>,
+    /// Hex pubkeys of agents granted the **platform** message tier. Empty by
+    /// default. A pubkey listed in both allowlists resolves to platform.
+    #[serde(default)]
+    pub platform_pubkeys: Vec<String>,
 }
 
 fn default_human_msg() -> u64 {
@@ -139,14 +146,84 @@ impl Default for RateLimitConfig {
             agent_standard_api_calls_per_min: default_agent_std_api(),
             agent_elevated_messages_per_min: default_agent_elev_msg(),
             agent_platform_messages_per_min: default_agent_plat_msg(),
+            elevated_pubkeys: Vec::new(),
+            platform_pubkeys: Vec::new(),
+        }
+    }
+}
+
+/// The agent tier a principal is rate-limited as.
+///
+/// Resolution is a pure function of the config's operator-provided
+/// elevated/platform pubkey allowlists — there is no other tier signal in the
+/// system today. See [`resolve_tier`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentTier {
+    /// Human (non-agent) principal.
+    Human,
+    /// Agent not present in either operator allowlist.
+    Standard,
+    /// Agent listed in the operator's elevated allowlist.
+    Elevated,
+    /// Agent listed in the operator's platform allowlist.
+    Platform,
+}
+
+/// Resolve the rate-limit tier for a principal.
+///
+/// `is_agent` is the NIP-OA / DB-backed agent determination; the operator's
+/// elevated/platform pubkey allowlists lift an agent into a higher tier.
+/// Platform wins over elevated when a pubkey is listed in both.
+pub fn resolve_tier(limits: &RateLimitConfig, pubkey: &PublicKey, is_agent: bool) -> AgentTier {
+    if !is_agent {
+        return AgentTier::Human;
+    }
+    let hex = pubkey.to_hex();
+    if limits
+        .platform_pubkeys
+        .iter()
+        .any(|p| p.eq_ignore_ascii_case(&hex))
+    {
+        AgentTier::Platform
+    } else if limits
+        .elevated_pubkeys
+        .iter()
+        .any(|p| p.eq_ignore_ascii_case(&hex))
+    {
+        AgentTier::Elevated
+    } else {
+        AgentTier::Standard
+    }
+}
+
+/// The message-per-minute limit for a resolved tier.
+pub fn message_limit_for(limits: &RateLimitConfig, tier: AgentTier) -> u64 {
+    match tier {
+        AgentTier::Human => limits.human_messages_per_min,
+        AgentTier::Standard => limits.agent_standard_messages_per_min,
+        AgentTier::Elevated => limits.agent_elevated_messages_per_min,
+        AgentTier::Platform => limits.agent_platform_messages_per_min,
+    }
+}
+
+/// The API-calls-per-minute limit for a resolved tier.
+///
+/// The config exposes a single agent API tier (`agent_standard_api_calls_per_min`);
+/// elevated/platform agents share it.
+pub fn api_limit_for(limits: &RateLimitConfig, tier: AgentTier) -> u64 {
+    match tier {
+        AgentTier::Human => limits.human_api_calls_per_min,
+        AgentTier::Standard | AgentTier::Elevated | AgentTier::Platform => {
+            limits.agent_standard_api_calls_per_min
         }
     }
 }
 
 /// Async rate-limiting interface.
 ///
-/// The Redis-backed production implementation lives in `buzz-relay` / `buzz-pubsub`.
-/// A no-op `AlwaysAllowRateLimiter` is provided for unit tests.
+/// The Redis-backed production implementation (`RedisRateLimiter`) lives in
+/// `buzz-pubsub` and uses a token bucket. A no-op `AlwaysAllowRateLimiter` is
+/// provided for unit tests.
 ///
 /// ## Tenant scoping
 ///
@@ -162,9 +239,8 @@ impl Default for RateLimitConfig {
 /// per-(community, IP) caps are ever needed as a tenant-fairness signal, that
 /// belongs in an additive `LimitType` keyed on `(community, ip)`, not in this trait.
 ///
-/// ⚠️ The fixed-window algorithm used by the Redis implementation allows up to 2×
-/// burst at window boundaries. Upgrade to a sliding window or token bucket if strict
-/// per-second limiting is required.
+/// The token-bucket implementation allows a bounded burst up to `limit` tokens,
+/// then enforces the configured average rate (`limit / window_secs` per second).
 pub trait RateLimiter: Send + Sync {
     /// Increment the per-(community, pubkey) counter for `limit_type` and return
     /// whether the request is within `limit` for the given `window_secs`.
@@ -322,5 +398,101 @@ mod tests {
             .await
             .unwrap();
         assert!(result.allowed);
+    }
+
+    #[test]
+    fn humans_resolve_to_human_tier_even_when_listed() {
+        // A pubkey in the operator allowlists is only elevated when the
+        // principal is an agent — a human listing must not grant agent tiers.
+        let keys = Keys::generate();
+        let limits = RateLimitConfig {
+            elevated_pubkeys: vec![keys.public_key().to_hex()],
+            ..RateLimitConfig::default()
+        };
+        assert_eq!(
+            resolve_tier(&limits, &keys.public_key(), false),
+            AgentTier::Human
+        );
+    }
+
+    #[test]
+    fn unlisted_agent_is_standard_tier() {
+        let keys = Keys::generate();
+        let limits = RateLimitConfig::default();
+        assert_eq!(
+            resolve_tier(&limits, &keys.public_key(), true),
+            AgentTier::Standard
+        );
+    }
+
+    #[test]
+    fn elevated_allowlist_lifts_agent() {
+        let keys = Keys::generate();
+        let limits = RateLimitConfig {
+            elevated_pubkeys: vec![keys.public_key().to_hex()],
+            ..RateLimitConfig::default()
+        };
+        assert_eq!(
+            resolve_tier(&limits, &keys.public_key(), true),
+            AgentTier::Elevated
+        );
+    }
+
+    #[test]
+    fn platform_allowlist_wins_over_elevated() {
+        let keys = Keys::generate();
+        let hex = keys.public_key().to_hex();
+        let limits = RateLimitConfig {
+            elevated_pubkeys: vec![hex.clone()],
+            platform_pubkeys: vec![hex],
+            ..RateLimitConfig::default()
+        };
+        assert_eq!(
+            resolve_tier(&limits, &keys.public_key(), true),
+            AgentTier::Platform
+        );
+    }
+
+    #[test]
+    fn allowlist_matching_is_case_insensitive() {
+        let keys = Keys::generate();
+        let limits = RateLimitConfig {
+            elevated_pubkeys: vec![keys.public_key().to_hex().to_uppercase()],
+            ..RateLimitConfig::default()
+        };
+        assert_eq!(
+            resolve_tier(&limits, &keys.public_key(), true),
+            AgentTier::Elevated
+        );
+    }
+
+    #[test]
+    fn message_limits_follow_resolved_tier() {
+        let limits = RateLimitConfig {
+            human_messages_per_min: 10,
+            agent_standard_messages_per_min: 20,
+            agent_elevated_messages_per_min: 30,
+            agent_platform_messages_per_min: 40,
+            ..RateLimitConfig::default()
+        };
+
+        assert_eq!(message_limit_for(&limits, AgentTier::Human), 10);
+        assert_eq!(message_limit_for(&limits, AgentTier::Standard), 20);
+        assert_eq!(message_limit_for(&limits, AgentTier::Elevated), 30);
+        assert_eq!(message_limit_for(&limits, AgentTier::Platform), 40);
+    }
+
+    #[test]
+    fn api_limits_share_one_agent_tier() {
+        let limits = RateLimitConfig {
+            human_api_calls_per_min: 100,
+            agent_standard_api_calls_per_min: 200,
+            ..RateLimitConfig::default()
+        };
+
+        assert_eq!(api_limit_for(&limits, AgentTier::Human), 100);
+        assert_eq!(api_limit_for(&limits, AgentTier::Standard), 200);
+        assert_eq!(api_limit_for(&limits, AgentTier::Elevated), 200);
+        assert_eq!(api_limit_for(&limits, AgentTier::Platform), 200);
     }
 }

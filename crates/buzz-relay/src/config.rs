@@ -312,6 +312,29 @@ fn positive_u64_from_env(name: &str, default: u64) -> Result<u64, ConfigError> {
     }
 }
 
+/// Parse a comma-separated list of 64-char hex pubkeys from the environment.
+///
+/// Empty/unset yields an empty list. Any invalid entry is a hard config error
+/// (fail closed on typo), mirroring `RELAY_OPERATOR_PUBKEYS`.
+fn pubkey_list_from_env(name: &str) -> Result<Vec<String>, ConfigError> {
+    let raw = std::env::var(name).unwrap_or_default();
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for part in raw.split(',') {
+        let hex = part.trim();
+        if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(ConfigError::InvalidValue(format!(
+                "{name} entry is not a 64-char hex pubkey: {hex:?}"
+            )));
+        }
+        out.push(hex.to_lowercase());
+    }
+    Ok(out)
+}
+
 fn rate_limit_config_from_env() -> Result<buzz_auth::RateLimitConfig, ConfigError> {
     let defaults = buzz_auth::RateLimitConfig::default();
     Ok(buzz_auth::RateLimitConfig {
@@ -343,6 +366,8 @@ fn rate_limit_config_from_env() -> Result<buzz_auth::RateLimitConfig, ConfigErro
             "BUZZ_RATE_LIMIT_AGENT_PLATFORM_MESSAGES_PER_MIN",
             defaults.agent_platform_messages_per_min,
         )?,
+        elevated_pubkeys: pubkey_list_from_env("BUZZ_RATE_LIMIT_ELEVATED_PUBKEYS")?,
+        platform_pubkeys: pubkey_list_from_env("BUZZ_RATE_LIMIT_PLATFORM_PUBKEYS")?,
     })
 }
 
@@ -1506,6 +1531,39 @@ mod tests {
             result,
             Err(ConfigError::InvalidValue(ref message))
                 if message.contains("BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC")
+        ));
+    }
+
+    #[test]
+    fn rate_limit_pubkey_lists_parse_and_normalize() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let pk_a = "a".repeat(64);
+        let pk_b = "b".repeat(64);
+        std::env::set_var("BUZZ_RATE_LIMIT_ELEVATED_PUBKEYS", format!("{pk_a},{pk_b}"));
+        std::env::set_var("BUZZ_RATE_LIMIT_PLATFORM_PUBKEYS", pk_a.to_uppercase());
+        let config = Config::from_env().expect("config");
+        std::env::remove_var("BUZZ_RATE_LIMIT_ELEVATED_PUBKEYS");
+        std::env::remove_var("BUZZ_RATE_LIMIT_PLATFORM_PUBKEYS");
+
+        assert_eq!(
+            config.auth.rate_limits.elevated_pubkeys,
+            vec![pk_a.clone(), pk_b.clone()]
+        );
+        // Platform list is normalized to lowercase hex.
+        assert_eq!(config.auth.rate_limits.platform_pubkeys, vec![pk_a]);
+    }
+
+    #[test]
+    fn rate_limit_pubkey_lists_reject_invalid_hex() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("BUZZ_RATE_LIMIT_ELEVATED_PUBKEYS", "not-hex");
+        let result = Config::from_env();
+        std::env::remove_var("BUZZ_RATE_LIMIT_ELEVATED_PUBKEYS");
+
+        assert!(matches!(
+            result,
+            Err(ConfigError::InvalidValue(ref message))
+                if message.contains("BUZZ_RATE_LIMIT_ELEVATED_PUBKEYS")
         ));
     }
 

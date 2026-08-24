@@ -770,6 +770,27 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Whether a pubkey is an agent (has an `agent_owner_pubkey`) in this
+    /// community, resolved via the per-community author-type cache. Unknown
+    /// pubkeys and lookup errors count as human — the rate-limit tier must
+    /// not add a failure path to admission.
+    pub(crate) async fn is_agent(&self, community_id: CommunityId, pubkey_bytes: &[u8]) -> bool {
+        let key = (community_id, pubkey_bytes.to_vec());
+        if let Some(v) = self.author_type_cache.get(&key) {
+            return v;
+        }
+        let v = match self
+            .db
+            .get_agent_channel_policy(community_id, pubkey_bytes)
+            .await
+        {
+            Ok(Some((_, owner))) => owner.is_some(),
+            Ok(None) | Err(_) => false,
+        };
+        self.author_type_cache.insert(key, v);
+        v
+    }
+
     /// Constructs `AppState` from its component services.
     ///
     /// Returns `(state, audit_shutdown)`. The caller should call

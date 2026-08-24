@@ -25,8 +25,11 @@ pub(crate) async fn enforce_http_admission(
     state: &AppState,
     tenant: &TenantContext,
     pubkey: &nostr::PublicKey,
+    is_agent: bool,
 ) -> Result<(), (StatusCode, Json<Value>)> {
-    let limit = state.auth.config().rate_limits.human_api_calls_per_min;
+    let limits = &state.auth.config().rate_limits;
+    let tier = buzz_auth::rate_limit::resolve_tier(limits, pubkey, is_agent);
+    let limit = buzz_auth::rate_limit::api_limit_for(limits, tier);
     match crate::admission::check_principal(
         state.admission_rate_limiter.as_ref(),
         tenant,
@@ -841,7 +844,10 @@ async fn submit_event_authed(
 ) -> SubmitOutcome {
     // Admission and replay checks fire before body parse — a 429 or replay
     // reject on a malformed body must still be attributed.
-    if let Err(e) = enforce_http_admission(state, tenant, &pubkey).await {
+    let is_agent = state
+        .is_agent(tenant.community(), pubkey.to_bytes().as_ref())
+        .await;
+    if let Err(e) = enforce_http_admission(state, tenant, &pubkey, is_agent).await {
         return SubmitOutcome::Err {
             status: e.0,
             response: e,
@@ -1037,7 +1043,10 @@ async fn query_events_authed(
     pubkey: nostr::PublicKey,
     event_id_bytes: [u8; 32],
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    enforce_http_admission(state, tenant, &pubkey).await?;
+    let is_agent = state
+        .is_agent(tenant.community(), pubkey.to_bytes().as_ref())
+        .await;
+    enforce_http_admission(state, tenant, &pubkey, is_agent).await?;
     check_nip98_replay(state, tenant, event_id_bytes).await?;
     let pubkey_bytes = pubkey.to_bytes().to_vec();
 
@@ -1559,7 +1568,10 @@ async fn count_events_authed(
     pubkey: nostr::PublicKey,
     event_id_bytes: [u8; 32],
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    enforce_http_admission(state, tenant, &pubkey).await?;
+    let is_agent = state
+        .is_agent(tenant.community(), pubkey.to_bytes().as_ref())
+        .await;
+    enforce_http_admission(state, tenant, &pubkey, is_agent).await?;
     check_nip98_replay(state, tenant, event_id_bytes).await?;
     let pubkey_bytes = pubkey.to_bytes().to_vec();
 

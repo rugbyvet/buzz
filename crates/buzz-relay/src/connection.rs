@@ -688,11 +688,8 @@ async fn enforce_ws_admission(
     }
 
     if is_event {
-        let message_limit = if is_agent {
-            limits.agent_standard_messages_per_min
-        } else {
-            limits.human_messages_per_min
-        };
+        let tier = buzz_auth::rate_limit::resolve_tier(limits, &pubkey, is_agent);
+        let message_limit = buzz_auth::rate_limit::message_limit_for(limits, tier);
         let message_result = crate::admission::check_principal(
             state.admission_rate_limiter.as_ref(),
             &conn.tenant,
