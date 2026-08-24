@@ -1,0 +1,47 @@
+name: Sync heartbeat
+
+# Weekly health check: if the upstream sync workflow has not succeeded
+# recently, open an issue so a silently-dead schedule is never missed.
+
+on:
+  schedule:
+    # Weekly, Monday 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  actions: read
+  issues: write
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check last successful upstream sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          LAST=$(gh run list --repo "$GITHUB_REPOSITORY" \
+            --workflow "Sync upstream (block/buzz)" --status success --branch main \
+            --limit 1 --json createdAt --jq '.[0].createdAt' || true)
+          if [ -z "$LAST" ]; then
+            echo "::warning::No successful upstream sync found."
+            LAST="1970-01-01T00:00:00Z"
+          fi
+          echo "Last successful sync: $LAST"
+          STALE_DAYS=$(( ( $(date +%s) - $(date -d "$LAST" +%s) ) / 86400 ))
+          echo "Days since last successful sync: $STALE_DAYS"
+          if [ "$STALE_DAYS" -le 9 ]; then
+            echo "Sync is healthy."
+            exit 0
+          fi
+          ISSUE=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+            --search 'in:title "Upstream sync is stale"' --state open \
+            --json number --jq '.[0].number' || true)
+          BODY="No successful upstream sync in ${STALE_DAYS} days (last: $LAST). Check the \`Sync upstream (block/buzz)\` workflow."
+          if [ -n "$ISSUE" ]; then
+            echo "Stale-sync issue already open (#$ISSUE)."
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "⚠️ Upstream sync is stale" --body "$BODY" || true
+          fi

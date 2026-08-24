@@ -1,8 +1,12 @@
 name: Sync upstream (block/buzz)
 
 # Merges block/buzz main into this repo's main so rugbyvet/buzz tracks the
-# upstream project. If the merge conflicts, the job fails loudly and the
-# conflict must be resolved manually (see C:\Users\rugby\sync-buzz-upstream.ps1).
+# upstream project.
+#   - Clean merge  -> pushes directly to main.
+#   - Merge conflict -> opens a `sync/upstream-*` PR for manual resolution
+#     (the PR is the alert; the job stays green).
+#   - Any unexpected failure (fetch/push) -> job fails and a failure issue is
+#     opened/updated.
 
 on:
   schedule:
@@ -12,6 +16,8 @@ on:
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: write
 
 concurrency:
   group: sync-upstream
@@ -39,12 +45,41 @@ jobs:
 
       - name: Merge upstream/main into main
         run: |
+          set -euo pipefail
           if git merge-base --is-ancestor upstream/main main; then
             echo "Already up to date with block/buzz main."
             exit 0
           fi
-          git merge upstream/main --no-edit
-          git log -1 --format="Merged upstream %h %s"
+          if git merge upstream/main --no-edit; then
+            echo "Merged cleanly:"
+            git log -1 --format="  %h %s"
+            git push origin main
+          else
+            echo "::warning::Merge conflict with block/buzz — opening a sync PR for manual resolution."
+            BRANCH="sync/upstream-$(date +%Y%m%d-%H%M)"
+            git checkout -B "$BRANCH"
+            git add -A
+            git commit -m "sync(upstream): merge block/buzz main (conflicts to resolve)" || true
+            git push origin "$BRANCH" || true
+            gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
+              --title "Upstream sync: resolve conflicts with block/buzz" \
+              --body "The nightly upstream merge conflicted. Resolve the conflicts in this branch, then merge.
 
-      - name: Push to origin main
-        run: git push origin main
+Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || true
+          fi
+
+      - name: Alert on unexpected sync failure
+        if: failure()
+        run: |
+          ISSUE=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+            --search 'in:title "Upstream sync failed"' --state open \
+            --json number --jq '.[0].number' || true)
+          BODY="The upstream sync workflow failed unexpectedly.
+
+Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          if [ -n "$ISSUE" ]; then
+            gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$BODY" || true
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "⚠️ Upstream sync failed" --body "$BODY" || true
+          fi

@@ -1,0 +1,43 @@
+name: CI failure alert
+
+# Watchdog: when the repo's CI workflow fails on main, open (or comment on) a
+# tracking issue so a broken main is never silent. Uses a fine-grained PAT
+# (secrets.ALERT_PAT, issues:write) because the GITHUB_TOKEN is read-only in
+# workflow_run-triggered workflows. If the secret is not configured, the job
+# skips gracefully.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    steps:
+      - name: Open or update CI failure issue
+        env:
+          GH_TOKEN: ${{ secrets.ALERT_PAT }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::secrets.ALERT_PAT not configured — skipping CI failure alert."
+            exit 0
+          fi
+          RUN_URL="${{ github.event.workflow_run.html_url }}"
+          ISSUE=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+            --search 'in:title "CI failed on main"' --state open \
+            --json number --jq '.[0].number' || true)
+          BODY="CI failed on \`main\`.
+
+Run: $RUN_URL"
+          if [ -n "$ISSUE" ]; then
+            gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$BODY" || true
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "❌ CI failed on main" --body "$BODY" || true
+          fi
