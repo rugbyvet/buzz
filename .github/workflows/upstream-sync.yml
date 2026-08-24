@@ -1,5 +1,6 @@
 name: Sync upstream (block/buzz)
 
+# v2 — conflict-aware sync (clean merges push; conflicts open a PR).
 # Merges block/buzz main into this repo's main so rugbyvet/buzz tracks the
 # upstream project.
 #   - Clean merge  -> pushes directly to main.
