@@ -1,0 +1,50 @@
+name: Sync upstream (block/buzz)
+
+# Merges block/buzz main into this repo's main so rugbyvet/buzz tracks the
+# upstream project. If the merge conflicts, the job fails loudly and the
+# conflict must be resolved manually (see C:\Users\rugby\sync-buzz-upstream.ps1).
+
+on:
+  schedule:
+    # Nightly at 03:17 UTC (adjust to taste).
+    - cron: "17 3 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "rugbyvet"
+          git config user.email "rugbyvet.us@gmail.com"
+
+      - name: Fetch upstream (block/buzz)
+        run: |
+          git remote add upstream https://github.com/block/buzz.git
+          git fetch upstream main
+
+      - name: Merge upstream/main into main
+        run: |
+          if git merge-base --is-ancestor upstream/main main; then
+            echo "Already up to date with block/buzz main."
+            exit 0
+          fi
+          git merge upstream/main --no-edit
+          git log -1 --format="Merged upstream %h %s"
+
+      - name: Push to origin main
+        run: git push origin main
