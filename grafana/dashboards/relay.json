@@ -1,0 +1,58 @@
+{
+  "title": "Buzz Relay",
+  "uid": "buzz-relay",
+  "version": 1,
+  "editable": true,
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Relay up",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "targets": [{ "expr": "up{job=\"buzz-relay\"}", "refId": "A" }],
+      "fieldConfig": {
+        "defaults": { "thresholds": { "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Post-commit dispatch (ingest+fanout) rate",
+      "gridPos": { "h": 8, "w": 10, "x": 4, "y": 0 },
+      "targets": [{ "expr": "sum(rate(buzz_post_commit_dispatch_scheduled_total[1m]))", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Admission rejections (rate-limited / unavailable)",
+      "gridPos": { "h": 8, "w": 10, "x": 14, "y": 0 },
+      "targets": [{ "expr": "sum(rate(buzz_admission_rejections_total[1m])) by (reason)", "refId": "A" }]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Relay process RSS",
+      "gridPos": { "h": 8, "w": 10, "x": 0, "y": 8 },
+      "targets": [{ "expr": "process_resident_memory_bytes{job=\"buzz-relay\"}", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "bytes" } }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Relay CPU seconds (rate)",
+      "gridPos": { "h": 8, "w": 10, "x": 10, "y": 8 },
+      "targets": [{ "expr": "sum(rate(process_cpu_seconds_total{job=\"buzz-relay\"}[1m]))", "refId": "A" }]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Media upload rejections",
+      "gridPos": { "h": 8, "w": 10, "x": 0, "y": 16 },
+      "targets": [{ "expr": "sum(rate(buzz_media_upload_rejections_total[1m])) by (reason)", "refId": "A" }]
+    }
+  ],
+  "time": { "from": "now-15m", "to": "now" }
+}

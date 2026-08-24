@@ -1,0 +1,57 @@
+# Dev observability stack for the Buzz relay: Prometheus (scrapes the host
+# relay on :9102) + Grafana (UI on http://localhost:3001).
+#
+# Standalone overlay so it never conflicts with upstream's docker-compose.yml:
+#   docker compose -f docker-compose.observability.yml up -d
+#
+# The relay must run on the host with its metrics port exposed (default 9102).
+name: buzz-observability
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: buzz-prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom-data:/prometheus
+    networks:
+      - obs-net
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: buzz-grafana
+    ports:
+      - "127.0.0.1:3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - obs-net
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+volumes:
+  prom-data:
+    name: buzz-obs-prom-data
+  grafana-data:
+    name: buzz-obs-grafana-data
+
+networks:
+  obs-net:
+    name: buzz-obs-net
+    driver: bridge
