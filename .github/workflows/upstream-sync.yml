@@ -73,9 +73,7 @@ jobs:
           ISSUE=$(gh issue list --repo "$GITHUB_REPOSITORY" \
             --search 'in:title "Upstream sync failed"' --state open \
             --json number --jq '.[0].number' || true)
-          BODY="The upstream sync workflow failed unexpectedly.
-
-Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          BODY="The upstream sync workflow failed unexpectedly. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           if [ -n "$ISSUE" ]; then
             gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$BODY" || true
           else
