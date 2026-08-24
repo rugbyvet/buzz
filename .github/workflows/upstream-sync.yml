@@ -63,9 +63,7 @@ jobs:
             git push origin "$BRANCH" || true
             gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
               --title "Upstream sync: resolve conflicts with block/buzz" \
-              --body "The nightly upstream merge conflicted. Resolve the conflicts in this branch, then merge.
-
-Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || true
+              --body "The nightly upstream merge conflicted. Resolve the conflicts in this branch, then merge. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || true
           fi
 
       - name: Alert on unexpected sync failure

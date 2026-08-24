@@ -32,9 +32,7 @@ jobs:
           ISSUE=$(gh issue list --repo "$GITHUB_REPOSITORY" \
             --search 'in:title "CI failed on main"' --state open \
             --json number --jq '.[0].number' || true)
-          BODY="CI failed on \`main\`.
-
-Run: $RUN_URL"
+          BODY="CI failed on main. Run: $RUN_URL"
           if [ -n "$ISSUE" ]; then
             gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "$BODY" || true
           else
